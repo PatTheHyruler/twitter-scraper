@@ -1,0 +1,8 @@
+alembic==1.8.1
+SQLAlchemy~=1.4.44
+tweepy~=4.12.1
+asyncmy~=0.2.5
+pymysql~=1.0.2
+requests~=2.28.1
+bs4~=0.0.1
+beautifulsoup4~=4.11.1
