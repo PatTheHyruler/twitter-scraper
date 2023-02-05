@@ -24,22 +24,16 @@ from model.entity.video_version import VideoVersion
 
 class BirdArchiver:
     def __init__(self, db: Database, client: tweepy.Client = None, show_more_limit: int = 64):
-        self._client = client
+        self.client = client if client is not None else tweepy.Client(Config.get().Twitter.UserAccessToken)
+        # self.client = client if client is not None else tweepy.Client(Config.get().Twitter.BearerToken)
         self.database = db
         self.show_more_limit = show_more_limit
         self.uow = UnitOfWork(self.database.session)
         self._processing_tweets_ids: List[int] = []
         self._processed_tweets_ids: List[int] = []
 
-    @property
-    def client(self) -> tweepy.Client:
-        if self._client is None:
-            self._client = tweepy.Client(Config.get().Twitter.UserAccessToken)
-
-        return self._client
-
     @staticmethod
-    def ask_user_for_new_user_access_token() -> tweepy.Client:
+    def ask_user_for_new_user_access_token() -> str:
         oauth_2_user_handler = tweepy.OAuth2UserHandler(
             client_id=Config.get().Twitter.ClientId,
             client_secret=Config.get().Twitter.ClientSecret,
@@ -49,24 +43,20 @@ class BirdArchiver:
         authorization_response_url = input(
             f"Click on this link and then click Authorize app:\n{oauth_2_user_handler.get_authorization_url()}\n"
             f"Now paste the contents of your browser's URL bar here:\n")
-        access_token = oauth_2_user_handler.fetch_token(authorization_response_url)
-        try:
-            Config.get().Twitter.UserAccessToken = access_token['access_token']
-            Config.save()
-        except Exception as e:
-            print(f"Failed to save access token to config:\n{e}")
-        return tweepy.Client(access_token['access_token'])
+        access_token = oauth_2_user_handler.fetch_token(authorization_response_url)["access_token"]
+        return access_token
+
+    @classmethod
+    def refresh_and_save_bot_user_access_token(cls):
+        access_token = cls.ask_user_for_new_user_access_token()
+        Config.get().Twitter.UserAccessToken = access_token
+        Config.save()
 
     def __fetch_user(self, user_id: int) -> tweepy.User:
-        l = lambda u_id: self.client.get_user(id=user_id,
+        return self.client.get_user(id=user_id,
                                               user_fields=['created_at', 'description', 'entities', 'location',
                                                            'profile_image_url', 'public_metrics', 'url',
                                                            'verified', 'pinned_tweet_id']).data
-        try:
-            return l(user_id)
-        except tweepy.errors.Unauthorized:
-            self.ask_user_for_new_user_access_token()
-            return l(user_id)
 
     async def archive_user(self, uow: UnitOfWork, user_id: int) -> User:
         existing_user = await uow.users.get_by_user_id(user_id)
@@ -82,31 +72,20 @@ class BirdArchiver:
                                                              'conversation_id', 'in_reply_to_user_id', 'author_id',
                                                              'created_at'],
                                                media_fields=['type', 'url', 'public_metrics', 'alt_text', 'variants'])
-        try:
-            return l(tweet_id)
-        except tweepy.errors.Unauthorized:
-            self.ask_user_for_new_user_access_token()
-            return l(tweet_id)
+        return l(tweet_id)
 
     def __get_simple_user(self, username: str) -> tweepy.user.User:
-        try:
-            return self.client.get_user(username=username).data
-        except tweepy.errors.Unauthorized:
-            self.ask_user_for_new_user_access_token()
-            return self.client.get_user(username=username).data
+        return self.client.get_user(username=username).data
 
     def __get_users_tweets(self, user_id: int, pagination_token: str = None) -> tweepy.Response:
-        try:
-            return self.client.get_users_tweets(id=user_id, pagination_token=pagination_token)
-        except tweepy.errors.Unauthorized:
-            self.ask_user_for_new_user_access_token()
-            return self.client.get_users_tweets(id=user_id, pagination_token=pagination_token)
+        return self.client.get_users_tweets(id=user_id, pagination_token=pagination_token)
 
     async def __aenter__(self):
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.database.session.close()
+        self.client.session.close()
 
     @staticmethod
     async def get_tweet_nitter_links(tweet: Tweet, author_username: str) -> List[str]:
@@ -202,13 +181,6 @@ class BirdArchiver:
         print(f"Downloaded {url} to {file_path}")
         return file_path
 
-    def __fetch_bookmarks(self, pagination_token: str) -> tweepy.Response:
-        try:
-            return self.client.get_bookmarks(pagination_token=pagination_token)
-        except tweepy.errors.Unauthorized:
-            self._client = self.ask_user_for_new_user_access_token()
-            return self.client.get_bookmarks(pagination_token=pagination_token)
-
     async def add_referenced_tweets_to_queue(self, uow: UnitOfWork, tweet: tweepy.Tweet, priority):
         if tweet.referenced_tweets is not None:
             for referenced_tweet in tweet.referenced_tweets:
@@ -295,12 +267,14 @@ class BirdArchiver:
         user = self.client.get_me(user_auth=False)
         user_id = user.data["id"]
         while True:
-            response = self.__fetch_bookmarks(next_token)
+            response = self.client.get_bookmarks(pagination_token=next_token)
             for tweet in response.data:
-                await uow.saved_tweets.mark_tweet_saved(tweet.id, user_id, ESavedTweetType.BOOKMARK)
+                changes_made = await uow.saved_tweets.mark_tweet_saved(tweet.id, user_id, ESavedTweetType.BOOKMARK)
                 if requeue_old or not (await uow.tweets.exists_by_tweet_id(tweet.id) or await uow.queued_tweets.exists_by_tweet_id(tweet.id)):
+                    changes_made = True
                     await self._add_tweet_to_queue(uow, tweet.id)
-                await uow.save_changes()
+                if changes_made:
+                    await uow.save_changes()
             if 'next_token' in response.meta:
                 next_token = response.meta['next_token']
             else:
@@ -315,7 +289,7 @@ class BirdArchiver:
             for queued_tweet in queued_tweets:
                 try:
                     await self.archive_queued_tweet(uow, queued_tweet)
-                except Exception as e:
+                except TweetFetchFailedException as e:
                     new_priority = queued_tweet.priority - 10000000
                     print(f"Failed to fetch {queued_tweet}, setting priority to {new_priority}")
                     queued_tweet.priority = new_priority
