@@ -1,5 +1,5 @@
 import tweepy
-from sqlalchemy import BigInteger, Column, String, DateTime, Integer, Boolean, ForeignKey
+from sqlalchemy import BigInteger, Column, String, DateTime, Integer, Boolean, ForeignKey, Text
 from sqlalchemy.orm import relationship
 
 from database.db import Base
@@ -14,7 +14,7 @@ class Tweet(Base):
     text = Column(String(512), nullable=False)
     edit_history_tweet_ids = Column(IntList, nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False)
-    entities = Column(String(4096), nullable=False)
+    entities = Column(Text, nullable=False)
     retweet_count = Column(Integer, nullable=False)
     reply_count = Column(Integer, nullable=False)
     like_count = Column(Integer, nullable=False)
