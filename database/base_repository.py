@@ -33,16 +33,16 @@ class BaseRepository(Generic[TEntity], metaclass=ABCMeta):
         result = await self._execute_scalars(stmt)
         return result.unique().all()
 
-    async def get_by_id(self, entity_id: int) -> Optional[TEntity]:
-        stmt = select(self._table).where(self._table.id == entity_id)
+    async def get_by_db_id(self, db_entity_id: int) -> Optional[TEntity]:
+        stmt = select(self._table).where(self._table.db_id == db_entity_id)
         return await self._first(stmt)
 
     async def get_all(self) -> List[TEntity]:
         stmt = select(self._table)
         return await self._all(stmt)
 
-    async def exists(self, entity_id: int) -> bool:
-        stmt = select(self._table).where(self._table.id == entity_id)
+    async def exists(self, db_entity_id: int) -> bool:
+        stmt = select(self._table).where(self._table.db_id == db_entity_id)
         stmt = exists(stmt).select()
         result = await self._execute_scalars(stmt)
         return result.one()
@@ -65,23 +65,23 @@ class BaseRepository(Generic[TEntity], metaclass=ABCMeta):
         print(entity, "Removed")
         return entity
 
-    async def remove_by_id(self, entity_id: int) -> Optional[TEntity]:
-        entity = await self.get_by_id(entity_id)
-        stmt = delete(self._table).where(self._table.id == entity_id)
+    async def remove_by_db_id(self, db_entity_id: int) -> Optional[TEntity]:
+        entity = await self.get_by_db_id(db_entity_id)
+        stmt = delete(self._table).where(self._table.db_id == db_entity_id)
         await self._session.execute(stmt)
 
         print(entity, "Removed")
         return entity
 
     async def upsert(self, entity: TEntity) -> TEntity:
-        if await self.exists(entity.id):
+        if await self.exists(entity.db_id):
             return await self.update_entity(entity)
 
         return await self.add(entity)
 
-    async def update(self, entity_id: int, values: Dict[str, any]) -> TEntity:
-        entity = await self.get_by_id(entity_id)
-        stmt = update(self._table).where(self._table.id == entity_id).values(values)
+    async def update(self, db_entity_id: int, values: Dict[str, any]) -> TEntity:
+        entity = await self.get_by_db_id(db_entity_id)
+        stmt = update(self._table).where(self._table.db_id == db_entity_id).values(values)
 
         await self._session.execute(stmt)
 
@@ -90,4 +90,4 @@ class BaseRepository(Generic[TEntity], metaclass=ABCMeta):
 
     async def update_entity(self, entity: TEntity) -> TEntity:
         class_fields = get_class_fields(entity)
-        return await self.update(entity.id, class_fields)
+        return await self.update(entity.db_id, class_fields)

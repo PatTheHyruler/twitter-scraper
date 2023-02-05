@@ -1,17 +1,16 @@
 import tweepy
-from sqlalchemy import BigInteger, Column, String, DateTime, ForeignKey, Boolean, Integer
-from sqlalchemy.orm import relationship
+from sqlalchemy import BigInteger, Column, String, DateTime, Boolean, Integer
 
 from database.db import Base
-from model.entity.tweet import Tweet
 
 
 class User(Base):
     __tablename__ = "user"
 
-    id = Column(BigInteger, primary_key=True, autoincrement=False)
-    name = Column(String(128), nullable=False)
-    username = Column(String(64), nullable=False)
+    db_id = Column(Integer, primary_key=True, autoincrement=True)
+    id = Column(BigInteger, index=True)
+    name = Column(String(128), index=True, nullable=False)
+    username = Column(String(64), index=True, nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False)
     description = Column(String(512), nullable=True)
     entities = Column(String(4096), nullable=False)
@@ -24,11 +23,6 @@ class User(Base):
     tweet_count = Column(Integer, nullable=False)
     url = Column(String(1024), nullable=True)
     verified = Column(Boolean, nullable=False)
-
-    pinned_tweet_id = Column(BigInteger, ForeignKey("tweet.id"), nullable=True)
-    pinned_tweet = relationship("Tweet", foreign_keys=[pinned_tweet_id])
-
-    tweets = relationship("Tweet", back_populates="author", foreign_keys=[Tweet.author_id], lazy="raise")
 
     def __init__(self, user: tweepy.User):
         self.id = user.id

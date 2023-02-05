@@ -1,8 +1,8 @@
 import mimetypes
-import os
 import random
 import re
 import string
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
@@ -12,15 +12,18 @@ from bs4 import BeautifulSoup
 
 from config import Config
 from database.db import Database
+from exceptions import TweetFetchFailedException
 from model import UnitOfWork
 from model.entity.media import EMediaType, Media
+from model.entity.queued_tweet import QueuedTweet
+from model.entity.saved_tweet import ESavedTweetType
 from model.entity.tweet import Tweet
 from model.entity.user import User
 from model.entity.video_version import VideoVersion
 
 
 class BirdArchiver:
-    def __init__(self, db: Database, client: tweepy.Client = None, show_more_limit: int = 12):
+    def __init__(self, db: Database, client: tweepy.Client = None, show_more_limit: int = 64):
         self._client = client
         self.database = db
         self.show_more_limit = show_more_limit
@@ -54,12 +57,7 @@ class BirdArchiver:
             print(f"Failed to save access token to config:\n{e}")
         return tweepy.Client(access_token['access_token'])
 
-    async def is_archived(self, tweet_id: int) -> bool:
-        return tweet_id in self._processing_tweets_ids \
-               or tweet_id in self._processed_tweets_ids \
-               or await self.uow.tweets.exists(tweet_id)
-
-    def __get_user(self, user_id: int) -> tweepy.User:
+    def __fetch_user(self, user_id: int) -> tweepy.User:
         l = lambda u_id: self.client.get_user(id=user_id,
                                               user_fields=['created_at', 'description', 'entities', 'location',
                                                            'profile_image_url', 'public_metrics', 'url',
@@ -70,13 +68,15 @@ class BirdArchiver:
             self.ask_user_for_new_user_access_token()
             return l(user_id)
 
-    async def archive_user(self, user_id: int):
-        if not await self.uow.users.exists(user_id):
-            user = self.__get_user(user_id)
-            await self.uow.users.add(User(user))
-            await self.uow.save_changes()
+    async def archive_user(self, uow: UnitOfWork, user_id: int) -> User:
+        existing_user = await uow.users.get_by_user_id(user_id)
+        if existing_user is None:
+            user = self.__fetch_user(user_id)
+            return await uow.users.add(User(user))
+        else:
+            return existing_user
 
-    def __get_tweet(self, tweet_id: int) -> tweepy.Response:
+    def __fetch_tweet(self, tweet_id: int) -> tweepy.Response:
         l = lambda t_id: self.client.get_tweet(id=tweet_id, expansions=['attachments.media_keys'],
                                                tweet_fields=['public_metrics', 'referenced_tweets', 'entities',
                                                              'conversation_id', 'in_reply_to_user_id', 'author_id',
@@ -87,84 +87,6 @@ class BirdArchiver:
         except tweepy.errors.Unauthorized:
             self.ask_user_for_new_user_access_token()
             return l(tweet_id)
-
-    async def archive_tweet(self, tweet_id: int, depth_left: int = 15) -> bool:
-        if await self.is_archived(tweet_id):
-            return True
-        if depth_left <= 0:
-            return False
-
-        tweet: Optional[tweepy.Tweet] = None
-        response = None
-        for i in range(2):
-            response = self.__get_tweet(tweet_id)
-            tweet = response.data
-            if tweet is not None:
-                break
-        if tweet is None:
-            print(f"Tweet ID {tweet_id} returned None from Twitter")
-            return False
-
-        self._processing_tweets_ids.append(tweet_id)
-
-        await self.archive_user(tweet.author_id)
-
-        if tweet.referenced_tweets is not None:
-            successfully_archived_referenced_tweets = True
-            try:
-                for ref_tweet in tweet.referenced_tweets:
-                    success = await self.archive_tweet(int(ref_tweet['id']), depth_left - 1)
-                    successfully_archived_referenced_tweets = successfully_archived_referenced_tweets and success
-            except Exception as e:
-                print(f"Failed to archive referenced tweets for {tweet}\n{e}")
-                tweet.referenced_tweets = []
-            if not successfully_archived_referenced_tweets:
-                tweet.referenced_tweets = []
-
-        if tweet.conversation_id:
-            if not await self.is_archived(tweet.conversation_id):
-                tweet.conversation_id = None
-
-        if 'media' in response.includes:
-            for media in response.includes['media']:
-                media: tweepy.Media
-                await self.uow.media_files.add(Media(media, tweet_id=tweet_id))
-                if (media.type == str(EMediaType.VIDEO.name).lower() or media.type == str(
-                        EMediaType.ANIMATED_GIF.name).lower()) and media.variants is not None:
-                    for variant_data in media.variants:
-                        await self.uow.video_versions.add(VideoVersion(variant_data, media.media_key))
-
-        await self.uow.tweets.add(Tweet(tweet))
-        self._processing_tweets_ids.remove(tweet_id)
-
-        if await self.uow.save_changes():
-            self._processed_tweets_ids.append(tweet_id)
-
-            await self._archive_tweet_replies(tweet_id)
-
-            return True
-
-        return False
-
-    def __get_bookmarks(self, pagination_token: str) -> tweepy.Response:
-        try:
-            return self.client.get_bookmarks(pagination_token=pagination_token)
-        except tweepy.errors.Unauthorized:
-            self._client = self.ask_user_for_new_user_access_token()
-            return self.client.get_bookmarks(pagination_token=pagination_token)
-
-    async def archive_bookmarks(self):
-        print("archiving bookmarks")
-        next_token = None
-        while True:
-            response = self.__get_bookmarks(next_token)
-            for tweet in response.data:
-                await self.archive_tweet(tweet.id)
-            if 'next_token' in response.meta:
-                next_token = response.meta['next_token']
-            else:
-                break
-        print("done")
 
     def __get_simple_user(self, username: str) -> tweepy.user.User:
         try:
@@ -180,22 +102,6 @@ class BirdArchiver:
             self.ask_user_for_new_user_access_token()
             return self.client.get_users_tweets(id=user_id, pagination_token=pagination_token)
 
-    async def archive_user_tweets(self, username: str):
-        user = self.__get_simple_user(username)
-
-        await self.archive_user(user.id)
-
-        next_token = None
-        while True:
-            response = self.__get_users_tweets(user.id, next_token)
-            for tweet in response.data:
-                tweet: tweepy.Tweet
-                await self.archive_tweet(tweet.id)
-            if 'next_token' in response.meta:
-                next_token = response.meta['next_token']
-            else:
-                break
-
     async def __aenter__(self):
         return self
 
@@ -203,96 +109,65 @@ class BirdArchiver:
         await self.database.session.close()
 
     @staticmethod
-    async def get_tweet_nitter_link(tweet: Tweet) -> str:
-        return f"https://nitter.net/{tweet.author.username}/status/{tweet.id}"
+    async def get_tweet_nitter_links(tweet: Tweet, author_username: str) -> List[str]:
+        return [f"https://{instance_url}/{author_username}/status/{tweet.id}" for instance_url in Config.get().Nitter.InstanceURLs]
 
-    async def _archive_tweet_replies(self, tweet_id: int):
-        try:
-            tweet = await self.uow.tweets.get_by_id(tweet_id)
-            url = await self.get_tweet_nitter_link(tweet)
-        except Exception as e:
-            print(f"Failed to get replies for tweet {tweet_id}!\n{e}")
-            return
+    async def add_tweet_replies_to_queue(self, uow: UnitOfWork, tweet: Tweet, author_username: str, priority: int) -> bool:
+        urls = await self.get_tweet_nitter_links(tweet, author_username)
 
         pattern = r"\/.+\/status\/(\d+)"
-        base_url = url
-        added_replies = 0
-        while url is not None:
-            try:
-                r = requests.get(url)
-            except Exception:
-                break
-            url = None
-            try:
-                soup = BeautifulSoup(r.content)
-                link_elements = soup.find_all('a', class_='tweet-link')
-            except Exception:
-                break
-            for link_element in link_elements:
+
+        sufficient_replies_added = lambda replies: len(replies) >= 0.6 * tweet.reply_count
+
+        added_replies = set()
+        print(f"Finding replies for {tweet}")
+        for url in urls:
+            print(f"{url=}")
+            base_url = url
+            while url is not None:
                 try:
-                    reply_url = link_element['href']
-                    m = re.match(pattern, reply_url)
-                    if m:
-                        reply_id = int(m.group(1))
-                        if await self.archive_tweet(reply_id):
-                            added_replies += 1
-                except Exception as e:
-                    print(f"Failed to archive reply from '{link_element}'\n{e}")
-                    continue
-            show_more = 0
-            for div in soup.find_all('div', class_='show-more'):
-                show_more += 1
-                if show_more > self.show_more_limit:
+                    r = requests.get(url)
+                except Exception:
                     break
-                for link_element in div.find_all('a'):
+                url = None
+                try:
+                    soup = BeautifulSoup(r.content)
+                    link_elements = soup.find_all('a', class_='tweet-link')
+                except Exception:
+                    break
+                for link_element in link_elements:
                     try:
-                        additional_url = link_element['href']
-                        if len(additional_url) > 0:
-                            url = base_url + additional_url
-                        break
-                    except Exception:
+                        reply_url = link_element['href']
+                        m = re.match(pattern, reply_url)
+                        if m:
+                            reply_id = int(m.group(1))
+                            await self._add_tweet_to_queue(uow, reply_id, priority)
+                            added_replies.add(reply_id)
+                    except Exception as e:
+                        print(f"Failed to archive reply from '{link_element}'\n{e}")
                         continue
-                if url is not None:
-                    break
-        print(f"{added_replies} replies for tweet id {tweet_id} are archived")
-
-    async def download_all_media(self):
-        print("downloading media")
-        for user in await self.uow.users.get_all_without_media():
-            try:
-                file_path = self.download_media(user.profile_image_url)
-                user.profile_image_downloaded = True
-                user.profile_image_file_path = file_path
-                await self.uow.users.update_entity(user)
-                await self.uow.save_changes()
-            except Exception as e:
-                print(f"Failed to download PFP for {user}\n{e}")
-
-        for media in await self.uow.media_files.get_all_not_downloaded():
-            try:
-                file_path = self.download_media(media.url)
-                media.downloaded = True
-                media.file_path = file_path
-                await self.uow.media_files.update_entity(media)
-                await self.uow.save_changes()
-            except Exception as e:
-                print(f"Failed to download media file for {media}\n{e}")
-
-        for video_version in await self.uow.video_versions.get_all_not_downloaded():
-            try:
-                file_path = self.download_media(video_version.url)
-                video_version.downloaded = True
-                video_version.file_path = file_path
-                await self.uow.video_versions.update_entity(video_version)
-                await self.uow.save_changes()
-            except Exception as e:
-                print(f"Failed to download media file for {video_version}\n{e}")
-        print("media downloaded")
+                show_more = 0
+                for div in soup.find_all('div', class_='show-more'):
+                    show_more += 1
+                    if show_more > self.show_more_limit:
+                        break
+                    for link_element in div.find_all('a'):
+                        try:
+                            additional_url = link_element['href']
+                            if len(additional_url) > 0:
+                                url = base_url + additional_url
+                            break
+                        except Exception:
+                            continue
+                    if url is not None:
+                        break
+            if sufficient_replies_added(added_replies):
+                break
+        print(f"{len(added_replies)} of {tweet.reply_count} replies for tweet id {tweet.id} added to queue")
+        return sufficient_replies_added(added_replies)
 
     @staticmethod
     def download_media(url: str) -> Path:
-        """Go through archived tweets and users in database and download their included media"""
-
         media_path = Path(Config.get().Media.Path)
 
         response_gotten = False
@@ -326,3 +201,159 @@ class BirdArchiver:
 
         print(f"Downloaded {url} to {file_path}")
         return file_path
+
+    def __fetch_bookmarks(self, pagination_token: str) -> tweepy.Response:
+        try:
+            return self.client.get_bookmarks(pagination_token=pagination_token)
+        except tweepy.errors.Unauthorized:
+            self._client = self.ask_user_for_new_user_access_token()
+            return self.client.get_bookmarks(pagination_token=pagination_token)
+
+    async def add_referenced_tweets_to_queue(self, uow: UnitOfWork, tweet: tweepy.Tweet, priority):
+        if tweet.referenced_tweets is not None:
+            for referenced_tweet in tweet.referenced_tweets:
+                await self._add_tweet_to_queue(uow, referenced_tweet.id, priority)
+
+    async def archive_queued_tweet(self, uow: UnitOfWork, queued_tweet: QueuedTweet):
+        tweet: tweepy.Tweet
+        response = self.__fetch_tweet(queued_tweet.tweet_id)
+        tweet = response.data
+        if tweet is None:
+            raise TweetFetchFailedException(queued_tweet.tweet_id)
+
+        db_tweet = Tweet(tweet)
+        if queued_tweet.priority > 0:
+            db_tweet.added_directly = True
+        db_tweet.last_fetched = datetime.utcnow()
+
+        user = await self.archive_user(uow, tweet.author_id)
+
+        existing_archived_tweet = await uow.tweets.get_by_tweet_id(queued_tweet.tweet_id)
+        if existing_archived_tweet is not None:
+            db_tweet.db_id = existing_archived_tweet.db_id
+            if existing_archived_tweet.added_directly is True:
+                db_tweet.added_directly = True
+            await uow.tweets.update_entity(db_tweet)
+        else:
+            await uow.tweets.add(db_tweet)
+
+        replies_success = await self.add_tweet_replies_to_queue(uow, db_tweet, user.username, queued_tweet.priority - 1)
+        await self.add_referenced_tweets_to_queue(uow, tweet, queued_tweet.priority - 1)
+
+        if 'media' in response.includes:
+            for media in response.includes['media']:
+                media: tweepy.Media
+                await self.uow.media_files.add(Media(media, tweet_id=queued_tweet.tweet_id))
+                if (media.type == str(EMediaType.VIDEO.name).lower() or media.type == str(
+                        EMediaType.ANIMATED_GIF.name).lower()) and media.variants is not None:
+                    for variant_data in media.variants:
+                        await self.uow.video_versions.add(VideoVersion(variant_data, media.media_key))
+
+        if replies_success:
+            await uow.queued_tweets.remove(queued_tweet)
+        else:
+            queued_tweet.priority -= 2
+            await uow.queued_tweets.update_entity(queued_tweet)
+        await uow.save_changes()
+
+    @staticmethod
+    async def _add_tweet_to_queue(uow: UnitOfWork, tweet_id: int, priority: int = 0):
+        await uow.queued_tweets.add_to_queue(tweet_id, priority)
+
+    async def add_tweets_to_queue(self, tweet_ids: List):
+        uow = UnitOfWork(self.database.session)
+        for arg in tweet_ids:
+            try:
+                tweet_id = int(arg)
+                await self._add_tweet_to_queue(uow, tweet_id, 1)
+            except Exception as e:
+                print(e)
+        await uow.save_changes()
+
+    async def add_user_tweets_to_queue(self, username: str):
+        user = self.__get_simple_user(username)
+        uow = UnitOfWork(self.database.session)
+
+        await self.archive_user(uow, user.id)
+
+        next_token = None
+        while True:
+            response = self.__get_users_tweets(user.id, next_token)
+            for tweet in response.data:
+                tweet: tweepy.Tweet
+                await self._add_tweet_to_queue(uow, tweet.id)
+            if 'next_token' in response.meta:
+                next_token = response.meta['next_token']
+            else:
+                break
+        await uow.save_changes()
+
+    async def add_bookmarks_to_queue(self, requeue_old: bool = False):
+        print("adding bookmarks to queue")
+        uow = UnitOfWork(self.database.session)
+        next_token = None
+        user = self.client.get_me(user_auth=False)
+        user_id = user.data["id"]
+        while True:
+            response = self.__fetch_bookmarks(next_token)
+            for tweet in response.data:
+                await uow.saved_tweets.mark_tweet_saved(tweet.id, user_id, ESavedTweetType.BOOKMARK)
+                if requeue_old or not (await uow.tweets.exists_by_tweet_id(tweet.id) or await uow.queued_tweets.exists_by_tweet_id(tweet.id)):
+                    await self._add_tweet_to_queue(uow, tweet.id)
+                await uow.save_changes()
+            if 'next_token' in response.meta:
+                next_token = response.meta['next_token']
+            else:
+                break
+        print("finished adding bookmarks to queue")
+
+    async def archive_tweets_from_queue(self, total: Optional[int] = None, min_priority: int = -6, batch_size: int = 10):
+        archived = 0
+        while total is None or archived < total:
+            uow = UnitOfWork(self.database.session)
+            queued_tweets = await uow.queued_tweets.get_next(batch_size, min_priority)
+            for queued_tweet in queued_tweets:
+                try:
+                    await self.archive_queued_tweet(uow, queued_tweet)
+                except Exception as e:
+                    new_priority = queued_tweet.priority - 10000000
+                    print(f"Failed to fetch {queued_tweet}, setting priority to {new_priority}")
+                    queued_tweet.priority = new_priority
+                    await uow.queued_tweets.update_entity(queued_tweet)
+                    await uow.save_changes()
+                archived += 1
+            if len(queued_tweets) == 0:
+                return
+
+    async def download_all_media(self):
+        print("downloading media")
+        for user in await self.uow.users.get_all_without_media():
+            try:
+                file_path = self.download_media(user.profile_image_url)
+                user.profile_image_downloaded = True
+                user.profile_image_file_path = file_path
+                await self.uow.users.update_entity(user)
+                await self.uow.save_changes()
+            except Exception as e:
+                print(f"Failed to download PFP for {user}\n{e}")
+
+        for media in await self.uow.media_files.get_all_not_downloaded():
+            try:
+                file_path = self.download_media(media.url)
+                media.downloaded = True
+                media.file_path = file_path
+                await self.uow.media_files.update_entity(media)
+                await self.uow.save_changes()
+            except Exception as e:
+                print(f"Failed to download media file for {media}\n{e}")
+
+        for video_version in await self.uow.video_versions.get_all_not_downloaded():
+            try:
+                file_path = self.download_media(video_version.url)
+                video_version.downloaded = True
+                video_version.file_path = file_path
+                await self.uow.video_versions.update_entity(video_version)
+                await self.uow.save_changes()
+            except Exception as e:
+                print(f"Failed to download media file for {video_version}\n{e}")
+        print("media downloaded")

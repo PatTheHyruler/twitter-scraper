@@ -17,7 +17,8 @@ class EMediaType(Enum):
 class Media(Base):
     __tablename__ = "media"
 
-    id = Column(String(32), primary_key=True, autoincrement=False)
+    db_id = Column(Integer, primary_key=True, autoincrement=True)
+    media_key = Column(String(32), index=True)
     type = Column(SqlEnum(EMediaType), nullable=False)
     url = Column(String(1024), nullable=True)
     duration_ms = Column(Integer, nullable=True)
@@ -26,21 +27,10 @@ class Media(Base):
     view_count = Column(Integer, nullable=True)
     alt_text = Column(String(1024), nullable=True)
 
-    tweet_id = Column(BigInteger, ForeignKey("tweet.id", ondelete="CASCADE"), nullable=True)
-    tweet = relationship("Tweet", back_populates="media_files", lazy="raise")
+    tweet_id = Column(BigInteger, index=True, nullable=False)
 
-    variants = relationship("VideoVersion", back_populates="video", lazy="joined")
-
-    downloaded = Column(Boolean, nullable=False, default=False)
+    downloaded = Column(Boolean, index=True, nullable=False, default=False)
     file_path = Column(String(512), nullable=True)
-
-    @property
-    def media_key(self) -> str:
-        return self.id
-
-    @media_key.setter
-    def media_key(self, value: str):
-        self.id = value
 
     def __init__(self, media: tweepy.Media, tweet_id: Optional[int] = None):
         self.media_key = media.media_key

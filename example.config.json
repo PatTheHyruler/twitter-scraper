@@ -1,0 +1,27 @@
+{
+    "Database": {
+        "Host": "ip",
+        "Name": "database_name",
+        "User": "user",
+        "Password": "password"
+    },
+    "Twitter": {
+        "RedirectURI": "https://randomurl.doesntneedtobereal.com",
+        "ClientId": "clientid",
+        "ClientSecret": "clientsecret",
+        "BearerToken": "bearertoken",
+        "UserAccessToken": "useraccesstoken"
+    },
+    "Media": {
+        "Path": "path/to/directory/where/media/should/be/saved"
+    },
+    "Nitter": {
+        "InstanceURLs": [
+            "n.c7.ee",
+            "nitter.net",
+            "nitter.lacontrevoie.fr",
+            "nitter.pussthecat.org",
+            "nitter.nixnet.services"
+        ]
+    }
+}
