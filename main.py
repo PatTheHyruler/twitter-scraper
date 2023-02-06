@@ -52,7 +52,7 @@ async def startup(args: argparse.Namespace):
                 archive_count = int(args.archivecount)
             min_priority = -6
             if args.minpriority:
-                min_priority = int(args.min_priority)
+                min_priority = int(args.minpriority)
             await ba.archive_tweets_from_queue(archive_count, min_priority)
 
 
