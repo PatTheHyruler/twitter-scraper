@@ -47,13 +47,10 @@ async def startup(args: argparse.Namespace):
         elif args.reauth:
             ba.refresh_and_save_bot_user_access_token()
         else:
-            archive_count = None
-            if args.archivecount:
-                archive_count = int(args.archivecount)
-            min_priority = -6
-            if args.minpriority:
-                min_priority = int(args.minpriority)
-            await ba.archive_tweets_from_queue(archive_count, min_priority)
+            archive_count = int(args.archivecount) if args.archivecount else None
+            min_priority = -6 if not args.minpriority else int(args.minpriority)
+            retry_failed = True if args.retryfailed else False
+            await ba.archive_tweets_from_queue(archive_count, min_priority, 10, retry_failed)
 
 
 if __name__ == '__main__':
@@ -68,6 +65,7 @@ if __name__ == '__main__':
     parser.add_argument("--user", help="Queue specified twitter user handle", action='append', type=str)
     parser.add_argument("-ac", "--archivecount", help="Amount of tweets to archive from queue", type=int)
     parser.add_argument("-min", "--minpriority", help="Priority cutoff below which tweets shouldn't be archived", type=int)
+    parser.add_argument("--retryfailed", help="Attempt to archive previously failed tweets/replies", action=argparse.BooleanOptionalAction)
     parser.add_argument("--reauth", help="Reauthenticate bot user", action=argparse.BooleanOptionalAction)
 
 

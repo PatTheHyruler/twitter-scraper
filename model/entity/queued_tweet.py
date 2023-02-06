@@ -1,4 +1,4 @@
-from sqlalchemy import Column, BigInteger, Integer, Index
+from sqlalchemy import Column, BigInteger, Integer, Index, Boolean
 
 from database.db import Base
 
@@ -9,6 +9,8 @@ class QueuedTweet(Base):
     db_id = Column(Integer, primary_key=True, autoincrement=True)
     tweet_id = Column(BigInteger, index=True, nullable=False)
     priority = Column(Integer, index=True, nullable=False, default=0)
+    tweet_failed = Column(Boolean, index=True, nullable=False, default=False)
+    replies_failed = Column(Boolean, index=True, nullable=False, default=False)
 
     def __repr__(self):
         return f"QueuedTweet({self.db_id=}, {self.tweet_id=}, {self.priority=})"

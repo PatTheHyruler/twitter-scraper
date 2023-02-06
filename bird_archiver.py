@@ -24,13 +24,19 @@ from model.entity.video_version import VideoVersion
 
 class BirdArchiver:
     def __init__(self, db: Database, client: tweepy.Client = None, show_more_limit: int = 64):
-        self.client = client if client is not None else tweepy.Client(Config.get().Twitter.UserAccessToken)
+        self._client = client
         # self.client = client if client is not None else tweepy.Client(Config.get().Twitter.BearerToken)
         self.database = db
         self.show_more_limit = show_more_limit
         self.uow = UnitOfWork(self.database.session)
         self._processing_tweets_ids: List[int] = []
         self._processed_tweets_ids: List[int] = []
+
+    @property
+    def client(self):
+        if self._client is None:
+            self._client = tweepy.Client(Config.get().Twitter.UserAccessToken)
+        return self._client
 
     @staticmethod
     def ask_user_for_new_user_access_token() -> str:
@@ -67,12 +73,11 @@ class BirdArchiver:
             return existing_user
 
     def __fetch_tweet(self, tweet_id: int) -> tweepy.Response:
-        l = lambda t_id: self.client.get_tweet(id=tweet_id, expansions=['attachments.media_keys'],
+        return self.client.get_tweet(id=tweet_id, expansions=['attachments.media_keys'],
                                                tweet_fields=['public_metrics', 'referenced_tweets', 'entities',
                                                              'conversation_id', 'in_reply_to_user_id', 'author_id',
                                                              'created_at'],
                                                media_fields=['type', 'url', 'public_metrics', 'alt_text', 'variants'])
-        return l(tweet_id)
 
     def __get_simple_user(self, username: str) -> tweepy.user.User:
         return self.client.get_user(username=username).data
@@ -224,7 +229,7 @@ class BirdArchiver:
         if replies_success:
             await uow.queued_tweets.remove(queued_tweet)
         else:
-            queued_tweet.priority -= 2
+            queued_tweet.replies_failed = True
             await uow.queued_tweets.update_entity(queued_tweet)
         await uow.save_changes()
 
@@ -281,18 +286,17 @@ class BirdArchiver:
                 break
         print("finished adding bookmarks to queue")
 
-    async def archive_tweets_from_queue(self, total: Optional[int] = None, min_priority: int = -6, batch_size: int = 10):
+    async def archive_tweets_from_queue(self, total: Optional[int] = None, min_priority: int = -6, batch_size: int = 10, retry_failed: bool = False):
         archived = 0
         while total is None or archived < total:
             uow = UnitOfWork(self.database.session)
-            queued_tweets = await uow.queued_tweets.get_next(batch_size, min_priority)
+            queued_tweets = await uow.queued_tweets.get_next(batch_size, min_priority, retry_failed)
             for queued_tweet in queued_tweets:
                 try:
                     await self.archive_queued_tweet(uow, queued_tweet)
                 except TweetFetchFailedException as e:
-                    new_priority = queued_tweet.priority - 10000000
-                    print(f"Failed to fetch {queued_tweet}, setting priority to {new_priority}")
-                    queued_tweet.priority = new_priority
+                    queued_tweet.tweet_failed = True
+                    print(f"Failed to fetch {queued_tweet}!")
                     await uow.queued_tweets.update_entity(queued_tweet)
                     await uow.save_changes()
                 archived += 1
