@@ -21,4 +21,4 @@ class MediaRepository(BaseRepository[Media]):
         class_fields = get_class_fields(entity)
         if 'variants' in class_fields:
             class_fields.pop('variants')
-        return await self.update(entity.id, class_fields)
+        return await self.update(entity.db_id, class_fields)
