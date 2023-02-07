@@ -90,7 +90,8 @@ class BirdArchiver:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.database.session.close()
-        self.client.session.close()
+        if self._client:
+            self._client.session.close()
 
     @staticmethod
     async def get_tweet_nitter_links(tweet: Tweet, author_username: str) -> List[str]:
@@ -288,9 +289,10 @@ class BirdArchiver:
 
     async def archive_tweets_from_queue(self, total: Optional[int] = None, min_priority: int = -6, batch_size: int = 10, retry_failed: bool = False):
         archived = 0
+        started = datetime.utcnow()
         while total is None or archived < total:
             uow = UnitOfWork(self.database.session)
-            queued_tweets = await uow.queued_tweets.get_next(batch_size, min_priority, retry_failed)
+            queued_tweets = await uow.queued_tweets.get_next(batch_size, min_priority, retry_failed, started)
             for queued_tweet in queued_tweets:
                 try:
                     await self.archive_queued_tweet(uow, queued_tweet)
