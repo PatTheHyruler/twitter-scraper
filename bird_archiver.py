@@ -257,6 +257,8 @@ class BirdArchiver:
         next_token = None
         while True:
             response = self.__get_users_tweets(user.id, next_token)
+            if not response.data:
+                break
             for tweet in response.data:
                 tweet: tweepy.Tweet
                 await self._add_tweet_to_queue(uow, tweet.id)
