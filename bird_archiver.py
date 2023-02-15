@@ -35,7 +35,7 @@ class BirdArchiver:
     @property
     def client(self):
         if self._client is None:
-            self._client = tweepy.Client(Config.get().Twitter.UserAccessToken)
+            self._client = tweepy.Client(Config.get().Twitter.UserAccessToken, wait_on_rate_limit=True)
         return self._client
 
     @staticmethod
