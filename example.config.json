@@ -10,7 +10,8 @@
         "ClientId": "clientid",
         "ClientSecret": "clientsecret",
         "BearerToken": "bearertoken",
-        "UserAccessToken": "useraccesstoken"
+        "UserAccessToken": "DO_NOT_CHANGE",
+        "RefreshToken": "DO_NOT_CHANGE"
     },
     "Media": {
         "Path": "path/to/directory/where/media/should/be/saved"

@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+from http.server import HTTPServer
 
 import tweepy
 
@@ -29,12 +30,7 @@ async def startup(args: argparse.Namespace):
 
     await database.init()
 
-    client = None
-    if args.bookmarks:
-        access_token = BirdArchiver.ask_user_for_new_user_access_token()
-        client = tweepy.Client(access_token, wait_on_rate_limit=True)
-
-    async with BirdArchiver(database, client=client) as ba:
+    async with BirdArchiver(database) as ba:
         if args.tweet:
             await ba.add_tweets_to_queue(args.tweet)
         elif args.user:

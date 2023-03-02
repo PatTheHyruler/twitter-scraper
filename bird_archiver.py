@@ -4,12 +4,14 @@ import re
 import string
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 import requests
 import tweepy
 from bs4 import BeautifulSoup
+from tweepy import Unauthorized
 
+from MyOauth2UserHandler import MyOauth2UserHandler
 from config import Config
 from database.db import Database
 from exceptions import TweetFetchFailedException
@@ -39,24 +41,30 @@ class BirdArchiver:
         return self._client
 
     @staticmethod
-    def ask_user_for_new_user_access_token() -> str:
-        oauth_2_user_handler = tweepy.OAuth2UserHandler(
+    def get_new_user_access_token() -> Dict[str, str]:
+        oauth_2_user_handler = MyOauth2UserHandler(
             client_id=Config.get().Twitter.ClientId,
             client_secret=Config.get().Twitter.ClientSecret,
             redirect_uri=Config.get().Twitter.RedirectURI,
             scope=['tweet.read', 'users.read', 'follows.read', 'offline.access', 'like.read', 'bookmark.read']
         )
-        authorization_response_url = input(
-            f"Click on this link and then click Authorize app:\n{oauth_2_user_handler.get_authorization_url()}\n"
-            f"Now paste the contents of your browser's URL bar here:\n")
-        access_token = oauth_2_user_handler.fetch_token(authorization_response_url)["access_token"]
-        return access_token
+        refresh_token = Config.get().Twitter.RefreshToken
+        try:
+            return oauth_2_user_handler.refresh_token(refresh_token)
+        except Exception:
+            authorization_response_url = input(
+                f"Click on this link and then click Authorize app:\n{oauth_2_user_handler.get_authorization_url()}\n"
+                f"Now paste the contents of your browser's URL bar here:\n")
+            return oauth_2_user_handler.fetch_token(authorization_response_url)
 
-    @classmethod
-    def refresh_and_save_bot_user_access_token(cls):
-        access_token = cls.ask_user_for_new_user_access_token()
-        Config.get().Twitter.UserAccessToken = access_token
+    @staticmethod
+    def refresh_and_save_bot_user_access_token():
+        token = BirdArchiver.get_new_user_access_token()
+        Config.get().Twitter.UserAccessToken = token["access_token"]
+        Config.get().Twitter.RefreshToken = token["refresh_token"]
+
         Config.save()
+        Config.refresh()
 
     def __fetch_user(self, user_id: int) -> tweepy.User:
         return self.client.get_user(id=user_id,
@@ -296,14 +304,26 @@ class BirdArchiver:
             uow = UnitOfWork(self.database.session)
             queued_tweets = await uow.queued_tweets.get_next(batch_size, min_priority, retry_failed, started)
             for queued_tweet in queued_tweets:
-                try:
-                    await self.archive_queued_tweet(uow, queued_tweet)
-                except TweetFetchFailedException as e:
-                    queued_tweet.tweet_failed = True
-                    print(f"Failed to fetch {queued_tweet}!")
-                    await uow.queued_tweets.update_entity(queued_tweet)
-                    await uow.save_changes()
-                archived += 1
+                token_refresh_attempted = False
+                while True:
+                    try:
+                        await self.archive_queued_tweet(uow, queued_tweet)
+                    except Unauthorized as e:
+                        if token_refresh_attempted:
+                            raise e
+                        self.refresh_and_save_bot_user_access_token()
+                        self._client = None
+                        token_refresh_attempted = True
+                        continue
+                    except TweetFetchFailedException as e:
+                        queued_tweet.tweet_failed = True
+                        print(f"Failed to fetch {queued_tweet}!")
+                        await uow.queued_tweets.update_entity(queued_tweet)
+                        await uow.save_changes()
+                        break
+
+                    archived += 1
+                    break
             if len(queued_tweets) == 0:
                 return
 
