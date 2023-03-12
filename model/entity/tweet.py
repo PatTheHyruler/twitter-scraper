@@ -11,7 +11,7 @@ class Tweet(Base):
 
     db_id = Column(Integer, primary_key=True, autoincrement=True)
     id = Column(BigInteger, index=True)
-    text = Column(String(512), nullable=False)
+    text = Column(String(8192), nullable=False)
     edit_history_tweet_ids = Column(IntList, nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False)
     entities = Column(Text, nullable=False)
