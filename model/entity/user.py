@@ -14,7 +14,7 @@ class User(Base):
     created_at = Column(DateTime(timezone=True), nullable=False)
     description = Column(String(512), nullable=True)
     entities = Column(String(4096), nullable=False)
-    location = Column(String(128), nullable=True)
+    location = Column(String(256), nullable=True)
     profile_image_url = Column(String(1024), nullable=False)
     profile_image_downloaded = Column(Boolean, nullable=False, default=False)
     profile_image_file_path = Column(String(512), nullable=True)
@@ -23,7 +23,6 @@ class User(Base):
     tweet_count = Column(Integer, nullable=False)
     url = Column(String(1024), nullable=True)
     verified = Column(Boolean, nullable=False)
-
     def __init__(self, user: tweepy.User):
         self.id = user.id
         self.name = user.name
