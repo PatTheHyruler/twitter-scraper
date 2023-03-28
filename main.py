@@ -41,7 +41,7 @@ async def startup(args: argparse.Namespace):
         elif args.media:
             await ba.download_all_media()
         elif args.reauth:
-            ba.refresh_and_save_bot_user_access_token()
+            ba.refresh_and_save_bot_user_access_token(refresh=False, prompt=True)
         else:
             archive_count = int(args.archivecount) if args.archivecount else None
             min_priority = -6 if not args.minpriority else int(args.minpriority)
