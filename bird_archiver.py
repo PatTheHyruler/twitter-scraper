@@ -340,7 +340,7 @@ class BirdArchiver:
             try:
                 file_path = self.download_media(user.profile_image_url)
                 user.profile_image_downloaded = True
-                user.profile_image_file_path = file_path
+                user.profile_image_file_path = str(file_path)
                 await self.uow.users.update_entity(user)
                 await self.uow.save_changes()
             except Exception as e:
@@ -350,7 +350,7 @@ class BirdArchiver:
             try:
                 file_path = self.download_media(media.url)
                 media.downloaded = True
-                media.file_path = file_path
+                media.file_path = str(file_path)
                 await self.uow.media_files.update_entity(media)
                 await self.uow.save_changes()
             except Exception as e:
@@ -360,7 +360,7 @@ class BirdArchiver:
             try:
                 file_path = self.download_media(video_version.url)
                 video_version.downloaded = True
-                video_version.file_path = file_path
+                video_version.file_path = str(file_path)
                 await self.uow.video_versions.update_entity(video_version)
                 await self.uow.save_changes()
             except Exception as e:
